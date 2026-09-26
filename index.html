@@ -105,14 +105,15 @@
         $('progressText').textContent='Mejorando nitidez de la imagen…';
         const improved=await preprocessImage(imageFile);
         const out=await Tesseract.recognize(improved,'spa+eng',{logger:m=>{if(m.status==='recognizing text'){const p=Math.round((m.progress||0)*100);$('progressBar').style.width=p+'%';$('progressText').textContent='Analizando texto: '+p+'%'}}});
-        let text=out.data.text||'';
-        let parsed=parseReceipt(text,exp,recipient);
+        let text=out.data.text||'', ocrWords=out.data.words||[];
+        let parsed=parseReceipt(text,exp,recipient,ocrWords);
         if(text.replace(/\s/g,'').length<30 || parsed.detected==null || parsed.date==='No identificada' || (recipient && parsed.detectedRecipient==='No identificado')){
           $('progressText').textContent='Segundo intento para completar los datos…';
           const retry=await Tesseract.recognize(imageFile,'spa+eng');
           const retryText=retry.data.text||'';
           if(retryText.trim()) text=text+'\n'+retryText;
-          parsed=parseReceipt(text,exp,recipient);
+          ocrWords=ocrWords.concat(retry.data.words||[]);
+          parsed=parseReceipt(text,exp,recipient,ocrWords);
         }
         current={expected:exp,recipient,text,...parsed}; showAnalysis();
       }catch(err){alert('No se pudo analizar la imagen. Comprueba tu conexión e inténtalo otra vez.');console.error(err)}
@@ -126,17 +127,18 @@
       for(let i=0;i<d.length;i+=4){let g=.299*d[i]+.587*d[i+1]+.114*d[i+2];g=Math.max(0,Math.min(255,(g-128)*1.45+128));d[i]=d[i+1]=d[i+2]=g}
       ctx.putImageData(img,0,0);return await new Promise(resolve=>canvas.toBlob(resolve,'image/png',1));
     }
-    function parseReceipt(text,expected,expectedRecipient=''){
+    function parseReceipt(text,expected,expectedRecipient='',ocrWords=[]){
       const lines=text.split(/\r?\n/).map(x=>x.replace(/[|]/g,' ').replace(/\s+/g,' ').trim()).filter(Boolean);
       const clean=lines.join(' ');
       const isDateLine=s=>/\b[0-3]?\d[\/-][01]?\d[\/-](?:20)?\d{2}\b|\b[0-3]?\d\s+(?:ene|feb|mar|abr|may|jun|jul|ago|sep|set|oct|nov|dic)/i.test(s);
       const isTimeLine=s=>/\b[0-2]?\d:[0-5]\d\b/.test(s);
       const isLabel=s=>/yape|plin|operaci[oó]n|seguridad|celular|destino|transacci[oó]n|monto|importe|pagaste|enviaste/i.test(s);
-      const values=s=>[...s.matchAll(/\d{1,6}(?:[.,]\d{1,2})?/g)].map(x=>money(x[0])).filter(x=>Number.isFinite(x)&&x>0);
+      const amountNumber=s=>money(String(s||'').replace(/[oO]/g,'0'));
+      const values=s=>[...String(s).replace(/[oO]/g,'0').matchAll(/\d{1,7}(?:[.,]\d{1,2})?/g)].map(x=>amountNumber(x[0])).filter(x=>Number.isFinite(x)&&x>0);
 
       // Detecta el importe incluso cuando OCR confunde S/ con 8/, 5/, $/, SI, S1 o S 50.
-      const strongAmount=/(?:s\s*(?:[\/|l1i]\s*)?\.?\s*|(?:8|5|3|g|\$|§)\s*[\/|l1i]\s*)(\d{1,6}(?:[.,]\d{1,2})?)/i;
-      const labelAmount=/(?:pen|importe|monto|enviaste|pagaste|transferiste)\s*[:.-]?\s*(?:s\s*[\/]?\s*)?(\d{1,6}(?:[.,]\d{1,2})?)/i;
+      const strongAmount=/(?:s\s*(?:[\/|l1i]\s*)?\.?\s*|(?:8|5|3|g|\$|§)\s*[\/|l1i]\s*)([0-9oO]{1,7}(?:[.,][0-9oO]{1,2})?)/i;
+      const labelAmount=/(?:pen|importe|monto|enviaste|pagaste|transferiste)\s*[:.-]?\s*(?:s\s*[\/]?\s*)?([0-9oO]{1,7}(?:[.,][0-9oO]{1,2})?)/i;
       const receiptStart=lines.findIndex(x=>/yapeaste|plineaste|pago\s+(?:exitoso|realizado)|transferencia\s+(?:exitosa|realizada)/i.test(normalize(x)));
       const start=receiptStart>=0?receiptStart:0;
       // El importe siempre aparece antes de estas secciones. Así se evita confundir 5-7-2,
@@ -150,19 +152,40 @@
         if(isDateLine(line)||isTimeLine(line)||/seguridad|celular|operaci[oó]n|transacci[oó]n/i.test(line)) continue;
         const explicit=line.match(labelAmount)||line.match(strongAmount);
         if(explicit){
-          const n=money(explicit[1]);
+          const n=amountNumber(explicit[1]);
           if(Number.isFinite(n)&&n>0&&n<1000000)candidates.push({value:n,line:i,confidence:'explicit',score:60-(i-start)});
-        }else if(i>start&&!isLabel(line)){
-          const standalone=line.match(/^\D{0,5}(\d{1,6}(?:[.,]\d{1,2})?)\D{0,4}$/);
-          if(standalone){
-            const n=money(standalone[1]);
-            if(Number.isFinite(n)&&n>0&&n<1000000)candidates.push({value:n,line:i,confidence:'structural',score:25-(i-start)});
+        }else{
+          const nums=values(line).filter(n=>n<1000000);
+          const expectedHere=Number.isFinite(expected)?nums.find(n=>Math.abs(n-expected)<.011):undefined;
+          if(expectedHere!==undefined)candidates.push({value:expectedHere,line:i,confidence:'matched',score:90-(i-start)});
+          else if(i>start&&!isLabel(line)){
+            const standalone=line.match(/^\D{0,5}([0-9oO]{1,7}(?:[.,][0-9oO]{1,2})?)\D{0,4}$/i);
+            if(standalone){
+              const n=amountNumber(standalone[1]);
+              if(Number.isFinite(n)&&n>0&&n<1000000)candidates.push({value:n,line:i,confidence:'structural',score:25-(i-start)});
+            }
           }
         }
       }
       // El monto esperado sirve para escoger entre lecturas posibles, pero solamente cuando
       // ese número está realmente presente dentro de la zona del importe.
       candidates.forEach(c=>{if(Number.isFinite(expected)&&Math.abs(c.value-expected)<.011)c.score+=100});
+      // Tesseract conserva el tamaño de cada palabra. En Yape y Plin, el monto es el
+      // número más grande visualmente; esto permite reconocer también S/1, S/2 y decimales.
+      const visualCandidates=(ocrWords||[]).map(w=>{
+        const raw=String(w.text||'').replace(/[oO]/g,'0');
+        const marked=raw.match(strongAmount);
+        const m=marked||raw.match(/^\D{0,2}([0-9]{1,7}(?:[.,][0-9]{1,2})?)\D{0,2}$/i);
+        if(!m)return null;
+        const value=amountNumber(m[1]),box=w.bbox||{},height=Math.max(0,(box.y1||0)-(box.y0||0));
+        if(!Number.isFinite(value)||value<=0||value>=1000000||height<=0)return null;
+        let score=height*4;
+        if(marked)score+=50;
+        if(Number.isFinite(expected)&&Math.abs(value-expected)<.011)score+=500;
+        if(value>=2000&&value<=2099&&(!Number.isFinite(expected)||Math.abs(value-expected)>.011))score-=200;
+        return {value,line:-1,confidence:'visual',score};
+      }).filter(Boolean).sort((a,b)=>b.score-a.score);
+      if(visualCandidates.length)candidates.push(visualCandidates[0]);
       candidates.sort((a,b)=>b.score-a.score);
       let amountLine=candidates[0]?.line??-1;
       let detected=candidates[0]?.value??null;
