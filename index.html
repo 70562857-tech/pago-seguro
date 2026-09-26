@@ -68,7 +68,10 @@
         <div><label for="correctedCode">Código de operación</label><input id="correctedCode"></div>
       </div>
       <details style="margin-top:14px"><summary><b>Ver texto completo reconocido</b></summary><textarea id="rawText" readonly></textarea></details>
-      <div class="actions"><button id="recheckBtn" class="secondary">Volver a comparar</button></div>
+      <div class="actions">
+        <button id="recheckBtn" class="secondary">Volver a comparar</button>
+        <button id="confirmVisibleAmountBtn" class="neutral hidden" type="button">Confirmar monto visible</button>
+      </div>
       <div class="notice" style="margin-top:14px"><b>Importante:</b> una captura puede ser modificada. Comprueba el movimiento en tu propia cuenta antes de confirmar.</div>
       <h3>4. Confirmación del comerciante</h3>
       <div class="actions"><button id="confirmBtn" class="primary">Sí, el dinero ingresó</button><button id="rejectBtn" class="danger">No aparece en mi cuenta</button></div>
@@ -123,7 +126,11 @@
           let amountWorker=null;
           try{
             amountWorker=await Tesseract.createWorker('eng');
-            await amountWorker.setParameters({tessedit_char_whitelist:'0123456789.,/SsoO$',preserve_interword_spaces:'1'});
+            await amountWorker.setParameters({
+              tessedit_char_whitelist:'0123456789.,/SsoO$',
+              preserve_interword_spaces:'1',
+              tessedit_pageseg_mode:'7'
+            });
             for(let i=0;i<amountImages.length&&verified==null;i++){
               $('progressText').textContent='Verificando el monto: intento '+(i+1)+' de '+amountImages.length+'…';
               const amountOut=await amountWorker.recognize(amountImages[i]);
@@ -168,7 +175,16 @@
         }
         return await new Promise(resolve=>canvas.toBlob(resolve,'image/png',1));
       };
-      return [await make('color',.04,.38),await make('contrast',.04,.38),await make('contrast',.14,.30),await make('binary',.14,.30)];
+      // Primero se prueban recortes estrechos: obligan al OCR a leer "S/ 30"
+      // como una sola línea y evitan que confunda el monto con la fecha o el código.
+      return [
+        await make('color',.10,.28),
+        await make('contrast',.10,.28),
+        await make('color',.18,.20),
+        await make('contrast',.18,.20),
+        await make('binary',.18,.20),
+        await make('contrast',.04,.38)
+      ];
     }
     function extractAmountFromZone(text,expected,words=[]){
       const readNumber=s=>money(String(s||'').replace(/[oO]/g,'0'));
@@ -304,7 +320,7 @@
       return tokens(expected).some(x=>tokens(detected).some(y=>x.slice(0,3)===y.slice(0,3)));
     }
     function showAnalysis(){
-      $('analysisCard').classList.remove('hidden');$('showExpected').textContent='S/ '+current.expected.toFixed(2);$('showDetected').textContent=current.detected==null?'No identificado':'S/ '+current.detected.toFixed(2);$('showRecipient').textContent=current.recipient||'No registrado';$('showDetectedRecipient').textContent=current.detectedRecipient;$('showPlatform').textContent=current.platform;$('showDate').textContent=current.date;$('showTime').textContent=current.time;$('showCode').textContent=current.code;$('rawText').value=current.text||'No se reconoció texto.';$('correctedAmount').value=current.detected==null?'':current.detected.toFixed(2);$('correctedCode').value=current.code==='No identificado'?'':current.code;compare();$('analysisCard').scrollIntoView({behavior:'smooth'});
+      current.amountManuallyConfirmed=false;$('analysisCard').classList.remove('hidden');$('showExpected').textContent='S/ '+current.expected.toFixed(2);$('showDetected').textContent=current.detected==null?'No identificado':'S/ '+current.detected.toFixed(2);$('showRecipient').textContent=current.recipient||'No registrado';$('showDetectedRecipient').textContent=current.detectedRecipient;$('showPlatform').textContent=current.platform;$('showDate').textContent=current.date;$('showTime').textContent=current.time;$('showCode').textContent=current.code;$('rawText').value=current.text||'No se reconoció texto.';$('correctedAmount').value=current.detected==null?'':current.detected.toFixed(2);$('correctedCode').value=current.code==='No identificado'?'':current.code;compare();$('analysisCard').scrollIntoView({behavior:'smooth'});
     }
     function compare(){
       current.detected=money($('correctedAmount').value);current.code=$('correctedCode').value.trim()||'No identificado';const box=$('statusBox');
@@ -314,10 +330,18 @@
       else if(current.recipient&&!recipientMatches(current.recipient,current.detectedRecipient)&&recipientPartiallyMatches(current.recipient,current.detectedRecipient)){box.className='result yellow';box.innerHTML='<strong>AMARILLO · Destinatario parcialmente reconocido</strong>El monto coincide, pero el lector no pudo confirmar todo el nombre. Revísalo antes de continuar.'}
       else if(current.recipient&&!recipientMatches(current.recipient,current.detectedRecipient)){box.className='result red';box.innerHTML='<strong>ROJO · El destinatario no coincide</strong>El monto coincide, pero el nombre leído no corresponde al destinatario esperado.'}
       else if(current.code==='No identificado'||current.date==='No identificada'||current.time==='No identificada'||current.platform==='No identificado'||current.detectedRecipient==='No identificado'){box.className='result yellow';box.innerHTML='<strong>AMARILLO · Lectura incompleta</strong>El monto coincide, pero falta reconocer uno o más datos. Revisa el destinatario, la fecha, la hora, el medio y el código.'}
+      else if(current.amountManuallyConfirmed){box.className='result green';box.innerHTML='<strong>VERDE · Datos revisados y coincidentes</strong>Confirmaste visualmente el monto y los demás datos fueron reconocidos. Comprueba el ingreso en tu cuenta antes de entregar el producto.'}
       else{box.className='result green';box.innerHTML='<strong>VERDE · Todos los datos coinciden</strong>Monto, destinatario, fecha, hora, medio y código fueron reconocidos correctamente. Confirma el ingreso en tu cuenta antes de entregar el producto.'}
       $('showDetected').textContent=Number.isFinite(current.detected)?'S/ '+current.detected.toFixed(2):'No identificado';$('showCode').textContent=current.code;
+      const needsVisualConfirmation=!Number.isFinite(current.detected)||Math.abs(current.detected-current.expected)>.011||current.amountConfidence==='uncertain';
+      $('confirmVisibleAmountBtn').classList.toggle('hidden',!needsVisualConfirmation);
+      $('confirmVisibleAmountBtn').textContent='Confirmar que la captura muestra S/ '+current.expected.toFixed(2);
     }
     $('recheckBtn').onclick=compare;
+    $('confirmVisibleAmountBtn').onclick=()=>{
+      if(!confirm('¿Observaste directamente en la captura que el monto es S/ '+current.expected.toFixed(2)+'?'))return;
+      current.amountManuallyConfirmed=true;current.amountConfidence='manual';$('correctedAmount').value=current.expected.toFixed(2);compare();
+    };
     $('confirmBtn').onclick=()=>finish(true);$('rejectBtn').onclick=()=>finish(false);
     function finish(ok){
       const box=$('finalBox');box.className='result '+(ok?'green':'red');box.innerHTML=ok?'<strong>VERDE · Pago confirmado</strong>El comerciante confirmó el ingreso. Puede continuar con la venta.':'<strong>ROJO · Pago no recibido</strong>No entregues el producto y solicita otra forma de pago.';
