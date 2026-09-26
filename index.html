@@ -35,8 +35,15 @@
         <div><label for="expectedAmount">Monto esperado (S/)</label><input id="expectedAmount" inputmode="decimal" placeholder="Ejemplo: 50.00"></div>
         <div><label for="expectedRecipient">Destinatario esperado</label><input id="expectedRecipient" placeholder="Ejemplo: Eder Galindo"></div>
       </div>
-      <label for="receipt">2. Tomar o cargar captura</label>
-      <input id="receipt" type="file" accept="image/*" capture="environment">
+      <label>2. Seleccionar el comprobante</label>
+      <p class="small">Usa la cámara o elige una imagen que ya tengas guardada.</p>
+      <input id="receiptCamera" class="hidden" type="file" accept="image/*" capture="environment">
+      <input id="receiptGallery" class="hidden" type="file" accept="image/png,image/jpeg,image/webp">
+      <div class="actions">
+        <button id="cameraBtn" class="secondary" type="button">Tomar foto</button>
+        <button id="galleryBtn" class="secondary" type="button">Cargar desde galería</button>
+      </div>
+      <p id="selectedFile" class="small">Ninguna imagen seleccionada.</p>
       <img id="preview" class="preview" alt="Vista previa del comprobante">
       <div class="actions"><button id="analyzeBtn" class="primary" disabled>Analizar comprobante</button><button id="resetBtn" class="neutral" type="button">Nueva operación</button></div>
       <div id="progress" class="progress"><p id="progressText" class="small">Preparando análisis…</p><div class="bar"><span id="progressBar"></span></div></div>
@@ -49,6 +56,8 @@
         <b>Monto esperado</b><span id="showExpected">-</span>
         <b>Monto detectado</b><span id="showDetected">-</span>
         <b>Destinatario esperado</b><span id="showRecipient">-</span>
+        <b>Destinatario detectado</b><span id="showDetectedRecipient">-</span>
+        <b>Medio detectado</b><span id="showPlatform">-</span>
         <b>Fecha encontrada</b><span id="showDate">-</span>
         <b>Hora encontrada</b><span id="showTime">-</span>
         <b>Código encontrado</b><span id="showCode">-</span>
@@ -58,6 +67,7 @@
         <div><label for="correctedAmount">Monto leído</label><input id="correctedAmount" inputmode="decimal"></div>
         <div><label for="correctedCode">Código de operación</label><input id="correctedCode"></div>
       </div>
+      <details style="margin-top:14px"><summary><b>Ver texto completo reconocido</b></summary><textarea id="rawText" readonly></textarea></details>
       <div class="actions"><button id="recheckBtn" class="secondary">Volver a comparar</button></div>
       <div class="notice" style="margin-top:14px"><b>Importante:</b> una captura puede ser modificada. Comprueba el movimiento en tu propia cuenta antes de confirmar.</div>
       <h3>4. Confirmación del comerciante</h3>
@@ -77,29 +87,59 @@
     const $=id=>document.getElementById(id); let imageFile=null; let current={};
     const normalize=s=>(s||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/\s+/g,' ').trim();
     const money=n=>Number(String(n).replace(',','.').replace(/[^0-9.]/g,''));
-    $('receipt').addEventListener('change',e=>{imageFile=e.target.files[0]||null;$('analyzeBtn').disabled=!imageFile;if(imageFile){$('preview').src=URL.createObjectURL(imageFile);$('preview').style.display='block'}});
+    function selectImage(file){
+      imageFile=file||null;$('analyzeBtn').disabled=!imageFile;
+      if(imageFile){$('preview').src=URL.createObjectURL(imageFile);$('preview').style.display='block';$('selectedFile').textContent='Imagen seleccionada: '+imageFile.name}
+    }
+    $('cameraBtn').onclick=()=>$('receiptCamera').click();
+    $('galleryBtn').onclick=()=>$('receiptGallery').click();
+    $('receiptCamera').addEventListener('change',e=>selectImage(e.target.files[0]));
+    $('receiptGallery').addEventListener('change',e=>selectImage(e.target.files[0]));
     $('resetBtn').onclick=()=>location.reload();
     $('analyzeBtn').onclick=async()=>{
       const exp=money($('expectedAmount').value), recipient=$('expectedRecipient').value.trim();
       if(!Number.isFinite(exp)||exp<=0){alert('Ingresa un monto válido.');return} if(!imageFile){alert('Carga una captura.');return}
       $('progress').style.display='block';$('analyzeBtn').disabled=true;$('progressText').textContent='Leyendo la captura…';
       try{
-        const out=await Tesseract.recognize(imageFile,'spa+eng',{logger:m=>{if(m.status==='recognizing text'){const p=Math.round((m.progress||0)*100);$('progressBar').style.width=p+'%';$('progressText').textContent='Analizando texto: '+p+'%'}}});
-        const text=out.data.text||''; const parsed=parseReceipt(text,exp);
+        if(!window.Tesseract) throw new Error('El lector OCR no pudo cargarse.');
+        $('progressText').textContent='Mejorando nitidez de la imagen…';
+        const improved=await preprocessImage(imageFile);
+        const out=await Tesseract.recognize(improved,'spa+eng',{logger:m=>{if(m.status==='recognizing text'){const p=Math.round((m.progress||0)*100);$('progressBar').style.width=p+'%';$('progressText').textContent='Analizando texto: '+p+'%'}}});
+        let text=out.data.text||'';
+        if(text.replace(/\s/g,'').length<30){
+          $('progressText').textContent='Segundo intento con la imagen original…';
+          const retry=await Tesseract.recognize(imageFile,'spa+eng');
+          if((retry.data.text||'').length>text.length) text=retry.data.text||'';
+        }
+        const parsed=parseReceipt(text,exp);
         current={expected:exp,recipient,text,...parsed}; showAnalysis();
       }catch(err){alert('No se pudo analizar la imagen. Comprueba tu conexión e inténtalo otra vez.');console.error(err)}
       finally{$('progress').style.display='none';$('analyzeBtn').disabled=false}
     };
+    async function preprocessImage(file){
+      const bitmap=await createImageBitmap(file);const max=1900;const scale=Math.min(2,max/Math.max(bitmap.width,bitmap.height));
+      const canvas=document.createElement('canvas');canvas.width=Math.max(1,Math.round(bitmap.width*scale));canvas.height=Math.max(1,Math.round(bitmap.height*scale));
+      const ctx=canvas.getContext('2d',{willReadFrequently:true});ctx.drawImage(bitmap,0,0,canvas.width,canvas.height);
+      const img=ctx.getImageData(0,0,canvas.width,canvas.height),d=img.data;
+      for(let i=0;i<d.length;i+=4){let g=.299*d[i]+.587*d[i+1]+.114*d[i+2];g=Math.max(0,Math.min(255,(g-128)*1.45+128));d[i]=d[i+1]=d[i+2]=g}
+      ctx.putImageData(img,0,0);return await new Promise(resolve=>canvas.toBlob(resolve,'image/png',1));
+    }
     function parseReceipt(text,expected){
-      const clean=text.replace(/\n+/g,' '); const amountMatches=[...clean.matchAll(/(?:s\/?\.?|pen|importe|monto|enviaste|pagaste)?\s*(\d{1,4}[.,]\d{2})/gi)].map(x=>money(x[1])).filter(Number.isFinite);
+      const clean=text.replace(/[|]/g,' ').replace(/\n+/g,' '); 
+      const preferred=[...clean.matchAll(/(?:s\/?\.?|pen|importe|monto|enviaste|pagaste|transferiste)\s*[:.]?\s*(\d{1,5}(?:[.,]\d{1,2})?)/gi)].map(x=>money(x[1])).filter(Number.isFinite);
+      const general=[...clean.matchAll(/\b(\d{1,5}[.,]\d{2})\b/g)].map(x=>money(x[1])).filter(Number.isFinite);
+      const amountMatches=[...preferred,...general];
       let detected=amountMatches.find(x=>Math.abs(x-expected)<.011) ?? amountMatches[0] ?? null;
       const date=(clean.match(/\b([0-3]?\d[\/-][01]?\d[\/-](?:20)?\d{2})\b/)||[])[1]||'No identificada';
       const time=(clean.match(/\b([0-2]?\d:[0-5]\d(?:\s?[ap]\.?m\.?)?)\b/i)||[])[1]||'No identificada';
-      const code=(clean.match(/(?:operaci[oó]n|c[oó]digo|nro\.?|n[uú]mero|id)\s*[:#-]?\s*([a-z0-9-]{5,})/i)||[])[1]||'No identificado';
-      return {detected,date,time,code};
+      const code=(clean.match(/(?:operaci[oó]n|c[oó]digo|nro\.?|n[uú]mero|id|transacci[oó]n)\s*[:#-]?\s*([a-z0-9-]{4,})/i)||[])[1]||'No identificado';
+      const platform=/\byape\b/i.test(clean)?'Yape':/\bplin\b/i.test(clean)?'Plin':/transferencia|banco/i.test(clean)?'Transferencia':'No identificado';
+      const rec=(clean.match(/(?:para|destinatario|enviaste a|pagaste a|a nombre de)\s*[:.-]?\s*([a-záéíóúñ][a-záéíóúñ ]{2,35})/i)||[])[1];
+      const detectedRecipient=rec?rec.trim().replace(/\s{2,}.*/,' '):'No identificado';
+      return {detected,date,time,code,platform,detectedRecipient};
     }
     function showAnalysis(){
-      $('analysisCard').classList.remove('hidden');$('showExpected').textContent='S/ '+current.expected.toFixed(2);$('showDetected').textContent=current.detected==null?'No identificado':'S/ '+current.detected.toFixed(2);$('showRecipient').textContent=current.recipient||'No registrado';$('showDate').textContent=current.date;$('showTime').textContent=current.time;$('showCode').textContent=current.code;$('correctedAmount').value=current.detected==null?'':current.detected.toFixed(2);$('correctedCode').value=current.code==='No identificado'?'':current.code;compare();$('analysisCard').scrollIntoView({behavior:'smooth'});
+      $('analysisCard').classList.remove('hidden');$('showExpected').textContent='S/ '+current.expected.toFixed(2);$('showDetected').textContent=current.detected==null?'No identificado':'S/ '+current.detected.toFixed(2);$('showRecipient').textContent=current.recipient||'No registrado';$('showDetectedRecipient').textContent=current.detectedRecipient;$('showPlatform').textContent=current.platform;$('showDate').textContent=current.date;$('showTime').textContent=current.time;$('showCode').textContent=current.code;$('rawText').value=current.text||'No se reconoció texto.';$('correctedAmount').value=current.detected==null?'':current.detected.toFixed(2);$('correctedCode').value=current.code==='No identificado'?'':current.code;compare();$('analysisCard').scrollIntoView({behavior:'smooth'});
     }
     function compare(){
       current.detected=money($('correctedAmount').value);current.code=$('correctedCode').value.trim()||'No identificado';const box=$('statusBox');
