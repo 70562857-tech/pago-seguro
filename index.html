@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="theme-color" content="#0f766e">
+  <title>Pago Seguro</title>
+  <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+  <style>
+    :root{--primary:#0f766e;--dark:#134e4a;--light:#f0fdfa;--line:#dbe4e6;--text:#17252a;--muted:#607079;--red:#b91c1c;--redbg:#fef2f2;--yellow:#a16207;--yellowbg:#fffbeb;--green:#15803d;--greenbg:#f0fdf4}
+    *{box-sizing:border-box} body{margin:0;background:#eef4f4;color:var(--text);font-family:Arial,Helvetica,sans-serif}
+    header{background:linear-gradient(135deg,var(--primary),var(--dark));color:white;padding:24px 18px 22px}
+    header div{max-width:760px;margin:auto} h1{margin:0 0 6px;font-size:28px} header p{margin:0;opacity:.92}
+    main{max-width:760px;margin:18px auto;padding:0 14px 40px}.card{background:white;border:1px solid var(--line);border-radius:16px;padding:18px;margin:14px 0;box-shadow:0 5px 18px rgba(20,65,70,.07)}
+    h2{font-size:20px;margin:0 0 14px} h3{font-size:16px;margin:16px 0 8px} label{display:block;font-weight:700;margin:12px 0 6px}
+    input,textarea{width:100%;border:1px solid #b9c8cb;border-radius:10px;padding:12px;font-size:16px;background:white} textarea{min-height:95px;resize:vertical}
+    input:focus,textarea:focus{outline:3px solid #99f6e4;border-color:var(--primary)}
+    .grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}.actions{display:flex;gap:10px;flex-wrap:wrap;margin-top:14px}
+    button{border:0;border-radius:10px;padding:12px 15px;font-weight:700;font-size:15px;cursor:pointer}.primary{background:var(--primary);color:white}.secondary{background:#e6f4f2;color:var(--dark)}.danger{background:#fee2e2;color:#991b1b}.neutral{background:#e7ecee;color:#26383d}
+    button:disabled{opacity:.5;cursor:not-allowed}.preview{display:none;width:100%;max-height:310px;object-fit:contain;background:#f4f7f7;border-radius:12px;margin-top:12px}
+    .progress{display:none;margin-top:14px}.bar{height:9px;background:#e2e8e9;border-radius:8px;overflow:hidden}.bar span{display:block;height:100%;width:0;background:var(--primary);transition:width .2s}.small{font-size:13px;color:var(--muted)}
+    .result{display:none;border-left:6px solid;padding:14px;border-radius:10px;margin-top:14px}.result.red{display:block;background:var(--redbg);border-color:var(--red);color:#7f1d1d}.result.yellow{display:block;background:var(--yellowbg);border-color:#eab308;color:#713f12}.result.green{display:block;background:var(--greenbg);border-color:var(--green);color:#14532d}
+    .result strong{display:block;font-size:18px;margin-bottom:4px}.data{display:grid;grid-template-columns:150px 1fr;gap:7px;border-top:1px solid var(--line);padding-top:12px;margin-top:12px}.data b{color:#33474d}.hidden{display:none!important}
+    table{width:100%;border-collapse:collapse;font-size:14px}th,td{text-align:left;padding:9px;border-bottom:1px solid var(--line)}th{background:#f3f7f7}.pill{display:inline-block;padding:4px 8px;border-radius:20px;font-size:12px;font-weight:700}.pill.green{background:var(--greenbg);color:var(--green)}.pill.red{background:var(--redbg);color:var(--red)}.pill.yellow{background:var(--yellowbg);color:var(--yellow)}
+    .notice{background:#eef6ff;border-left:5px solid #2563eb;padding:12px;border-radius:8px;color:#1e3a8a;font-size:14px}.footer{text-align:center;color:var(--muted);font-size:12px;margin-top:24px}
+    @media(max-width:600px){.grid{grid-template-columns:1fr}.data{grid-template-columns:1fr}.data b{margin-top:5px}h1{font-size:24px}.card{padding:15px}}
+  </style>
+</head>
+<body>
+  <header><div><h1>Pago Seguro</h1><p>Analiza el comprobante y confirma antes de entregar.</p></div></header>
+  <main>
+    <section class="card" id="formCard">
+      <h2>1. Registrar la venta</h2>
+      <div class="grid">
+        <div><label for="expectedAmount">Monto esperado (S/)</label><input id="expectedAmount" inputmode="decimal" placeholder="Ejemplo: 50.00"></div>
+        <div><label for="expectedRecipient">Destinatario esperado</label><input id="expectedRecipient" placeholder="Ejemplo: Eder Galindo"></div>
+      </div>
+      <label for="receipt">2. Tomar o cargar captura</label>
+      <input id="receipt" type="file" accept="image/*" capture="environment">
+      <img id="preview" class="preview" alt="Vista previa del comprobante">
+      <div class="actions"><button id="analyzeBtn" class="primary" disabled>Analizar comprobante</button><button id="resetBtn" class="neutral" type="button">Nueva operación</button></div>
+      <div id="progress" class="progress"><p id="progressText" class="small">Preparando análisis…</p><div class="bar"><span id="progressBar"></span></div></div>
+    </section>
+
+    <section class="card hidden" id="analysisCard">
+      <h2>3. Resultado del análisis</h2>
+      <div id="statusBox" class="result"></div>
+      <div class="data">
+        <b>Monto esperado</b><span id="showExpected">-</span>
+        <b>Monto detectado</b><span id="showDetected">-</span>
+        <b>Destinatario esperado</b><span id="showRecipient">-</span>
+        <b>Fecha encontrada</b><span id="showDate">-</span>
+        <b>Hora encontrada</b><span id="showTime">-</span>
+        <b>Código encontrado</b><span id="showCode">-</span>
+      </div>
+      <h3>Corrige si el OCR leyó mal</h3>
+      <div class="grid">
+        <div><label for="correctedAmount">Monto leído</label><input id="correctedAmount" inputmode="decimal"></div>
+        <div><label for="correctedCode">Código de operación</label><input id="correctedCode"></div>
+      </div>
+      <div class="actions"><button id="recheckBtn" class="secondary">Volver a comparar</button></div>
+      <div class="notice" style="margin-top:14px"><b>Importante:</b> una captura puede ser modificada. Comprueba el movimiento en tu propia cuenta antes de confirmar.</div>
+      <h3>4. Confirmación del comerciante</h3>
+      <div class="actions"><button id="confirmBtn" class="primary">Sí, el dinero ingresó</button><button id="rejectBtn" class="danger">No aparece en mi cuenta</button></div>
+      <div id="finalBox" class="result"></div>
+    </section>
+
+    <section class="card">
+      <h2>Historial del dispositivo</h2>
+      <p class="small">Los registros se guardan solamente en este navegador.</p>
+      <div style="overflow:auto"><table><thead><tr><th>Fecha</th><th>Monto</th><th>Resultado</th></tr></thead><tbody id="historyBody"><tr><td colspan="3">Aún no hay operaciones.</td></tr></tbody></table></div>
+      <div class="actions"><button id="clearHistoryBtn" class="neutral">Borrar historial</button></div>
+    </section>
+    <p class="footer">Prototipo académico. No está afiliado a Yape, Plin ni a una entidad financiera.</p>
+  </main>
+  <script>
+    const $=id=>document.getElementById(id); let imageFile=null; let current={};
+    const normalize=s=>(s||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/\s+/g,' ').trim();
+    const money=n=>Number(String(n).replace(',','.').replace(/[^0-9.]/g,''));
+    $('receipt').addEventListener('change',e=>{imageFile=e.target.files[0]||null;$('analyzeBtn').disabled=!imageFile;if(imageFile){$('preview').src=URL.createObjectURL(imageFile);$('preview').style.display='block'}});
+    $('resetBtn').onclick=()=>location.reload();
+    $('analyzeBtn').onclick=async()=>{
+      const exp=money($('expectedAmount').value), recipient=$('expectedRecipient').value.trim();
+      if(!Number.isFinite(exp)||exp<=0){alert('Ingresa un monto válido.');return} if(!imageFile){alert('Carga una captura.');return}
+      $('progress').style.display='block';$('analyzeBtn').disabled=true;$('progressText').textContent='Leyendo la captura…';
+      try{
+        const out=await Tesseract.recognize(imageFile,'spa+eng',{logger:m=>{if(m.status==='recognizing text'){const p=Math.round((m.progress||0)*100);$('progressBar').style.width=p+'%';$('progressText').textContent='Analizando texto: '+p+'%'}}});
+        const text=out.data.text||''; const parsed=parseReceipt(text,exp);
+        current={expected:exp,recipient,text,...parsed}; showAnalysis();
+      }catch(err){alert('No se pudo analizar la imagen. Comprueba tu conexión e inténtalo otra vez.');console.error(err)}
+      finally{$('progress').style.display='none';$('analyzeBtn').disabled=false}
+    };
+    function parseReceipt(text,expected){
+      const clean=text.replace(/\n+/g,' '); const amountMatches=[...clean.matchAll(/(?:s\/?\.?|pen|importe|monto|enviaste|pagaste)?\s*(\d{1,4}[.,]\d{2})/gi)].map(x=>money(x[1])).filter(Number.isFinite);
+      let detected=amountMatches.find(x=>Math.abs(x-expected)<.011) ?? amountMatches[0] ?? null;
+      const date=(clean.match(/\b([0-3]?\d[\/-][01]?\d[\/-](?:20)?\d{2})\b/)||[])[1]||'No identificada';
+      const time=(clean.match(/\b([0-2]?\d:[0-5]\d(?:\s?[ap]\.?m\.?)?)\b/i)||[])[1]||'No identificada';
+      const code=(clean.match(/(?:operaci[oó]n|c[oó]digo|nro\.?|n[uú]mero|id)\s*[:#-]?\s*([a-z0-9-]{5,})/i)||[])[1]||'No identificado';
+      return {detected,date,time,code};
+    }
+    function showAnalysis(){
+      $('analysisCard').classList.remove('hidden');$('showExpected').textContent='S/ '+current.expected.toFixed(2);$('showDetected').textContent=current.detected==null?'No identificado':'S/ '+current.detected.toFixed(2);$('showRecipient').textContent=current.recipient||'No registrado';$('showDate').textContent=current.date;$('showTime').textContent=current.time;$('showCode').textContent=current.code;$('correctedAmount').value=current.detected==null?'':current.detected.toFixed(2);$('correctedCode').value=current.code==='No identificado'?'':current.code;compare();$('analysisCard').scrollIntoView({behavior:'smooth'});
+    }
+    function compare(){
+      current.detected=money($('correctedAmount').value);current.code=$('correctedCode').value.trim()||'No identificado';const box=$('statusBox');
+      if(!Number.isFinite(current.detected)){box.className='result yellow';box.innerHTML='<strong>AMARILLO · Lectura incompleta</strong>No se pudo identificar el monto. Revisa el comprobante.'}
+      else if(Math.abs(current.detected-current.expected)>.011){box.className='result red';box.innerHTML='<strong>ROJO · El monto no coincide</strong>Esperabas S/ '+current.expected.toFixed(2)+' y la captura muestra S/ '+current.detected.toFixed(2)+'.'}
+      else if(current.code==='No identificado'){box.className='result yellow';box.innerHTML='<strong>AMARILLO · Falta información</strong>El monto coincide, pero no se identificó el código de operación.'}
+      else{box.className='result yellow';box.innerHTML='<strong>AMARILLO · Datos visibles coincidentes</strong>Ahora revisa el movimiento en tu propia cuenta. La captura todavía no confirma el ingreso.'}
+      $('showDetected').textContent=Number.isFinite(current.detected)?'S/ '+current.detected.toFixed(2):'No identificado';$('showCode').textContent=current.code;
+    }
+    $('recheckBtn').onclick=compare;
+    $('confirmBtn').onclick=()=>finish(true);$('rejectBtn').onclick=()=>finish(false);
+    function finish(ok){
+      const box=$('finalBox');box.className='result '+(ok?'green':'red');box.innerHTML=ok?'<strong>VERDE · Pago confirmado</strong>El comerciante confirmó el ingreso. Puede continuar con la venta.':'<strong>ROJO · Pago no recibido</strong>No entregues el producto y solicita otra forma de pago.';
+      saveHistory({date:new Date().toLocaleString('es-PE'),amount:current.expected||0,status:ok?'Confirmado':'No recibido',color:ok?'green':'red'});renderHistory();
+    }
+    function saveHistory(item){const h=JSON.parse(localStorage.getItem('pagoSeguroHistory')||'[]');h.unshift(item);localStorage.setItem('pagoSeguroHistory',JSON.stringify(h.slice(0,30)))}
+    function renderHistory(){const h=JSON.parse(localStorage.getItem('pagoSeguroHistory')||'[]');$('historyBody').innerHTML=h.length?h.map(x=>`<tr><td>${x.date}</td><td>S/ ${Number(x.amount).toFixed(2)}</td><td><span class="pill ${x.color}">${x.status}</span></td></tr>`).join(''):'<tr><td colspan="3">Aún no hay operaciones.</td></tr>'}
+    $('clearHistoryBtn').onclick=()=>{if(confirm('¿Borrar todo el historial de este dispositivo?')){localStorage.removeItem('pagoSeguroHistory');renderHistory()}};renderHistory();
+  </script>
+</body>
+</html>
