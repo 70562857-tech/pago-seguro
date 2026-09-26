@@ -120,12 +120,24 @@
         if(parsed.detected==null || Math.abs(parsed.detected-exp)>.011){
           $('progressText').textContent='Verificando únicamente la zona del monto…';
           const amountImages=await preprocessAmountZones(imageFile);let verified=null,amountTexts=[];
-          for(let i=0;i<amountImages.length&&verified==null;i++){
-            $('progressText').textContent='Verificando el monto: intento '+(i+1)+' de '+amountImages.length+'…';
-            const amountOut=await Tesseract.recognize(amountImages[i],'eng');
-            amountTexts.push(amountOut.data.text||'');
-            verified=extractAmountFromZone(amountOut.data.text||'',exp,amountOut.data.words||[]);
-          }
+          let amountWorker=null;
+          try{
+            amountWorker=await Tesseract.createWorker('eng');
+            await amountWorker.setParameters({tessedit_char_whitelist:'0123456789.,/SsoO$',preserve_interword_spaces:'1'});
+            for(let i=0;i<amountImages.length&&verified==null;i++){
+              $('progressText').textContent='Verificando el monto: intento '+(i+1)+' de '+amountImages.length+'…';
+              const amountOut=await amountWorker.recognize(amountImages[i]);
+              amountTexts.push(amountOut.data.text||'');
+              verified=extractAmountFromZone(amountOut.data.text||'',exp,amountOut.data.words||[]);
+            }
+          }catch(workerErr){
+            console.warn('Lector numérico alternativo no disponible',workerErr);
+            for(let i=0;i<amountImages.length&&verified==null;i++){
+              const amountOut=await Tesseract.recognize(amountImages[i],'eng');
+              amountTexts.push(amountOut.data.text||'');
+              verified=extractAmountFromZone(amountOut.data.text||'',exp,amountOut.data.words||[]);
+            }
+          }finally{if(amountWorker)await amountWorker.terminate()}
           if(verified!=null){parsed.detected=verified;parsed.amountConfidence='zone'}
           else{parsed.amountConfidence='uncertain'}
           text+='\n[Lecturas específicas del monto]\n'+amountTexts.join('\n---\n');
@@ -144,11 +156,11 @@
     }
     async function preprocessAmountZones(file){
       const bitmap=await createImageBitmap(file);
-      const sourceHeight=Math.max(1,Math.round(bitmap.height*.52));
       const scale=Math.max(1,Math.min(4,2400/bitmap.width));
-      const make=async mode=>{
+      const make=async(mode,yRatio,hRatio)=>{
+        const sourceY=Math.max(0,Math.round(bitmap.height*yRatio)),sourceHeight=Math.max(1,Math.min(bitmap.height-sourceY,Math.round(bitmap.height*hRatio)));
         const canvas=document.createElement('canvas');canvas.width=Math.round(bitmap.width*scale);canvas.height=Math.round(sourceHeight*scale);
-        const ctx=canvas.getContext('2d',{willReadFrequently:true});ctx.drawImage(bitmap,0,0,bitmap.width,sourceHeight,0,0,canvas.width,canvas.height);
+        const ctx=canvas.getContext('2d',{willReadFrequently:true});ctx.drawImage(bitmap,0,sourceY,bitmap.width,sourceHeight,0,0,canvas.width,canvas.height);
         if(mode!=='color'){
           const img=ctx.getImageData(0,0,canvas.width,canvas.height),d=img.data;
           for(let i=0;i<d.length;i+=4){let g=.299*d[i]+.587*d[i+1]+.114*d[i+2];if(mode==='contrast')g=Math.max(0,Math.min(255,(g-128)*1.9+128));else g=g>170?255:0;d[i]=d[i+1]=d[i+2]=g}
@@ -156,7 +168,7 @@
         }
         return await new Promise(resolve=>canvas.toBlob(resolve,'image/png',1));
       };
-      return [await make('color'),await make('contrast'),await make('binary')];
+      return [await make('color',.04,.38),await make('contrast',.04,.38),await make('contrast',.14,.30),await make('binary',.14,.30)];
     }
     function extractAmountFromZone(text,expected,words=[]){
       const readNumber=s=>money(String(s||'').replace(/[oO]/g,'0'));
