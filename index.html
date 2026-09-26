@@ -86,7 +86,7 @@
   <script>
     const $=id=>document.getElementById(id); let imageFile=null; let current={};
     const normalize=s=>(s||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/\s+/g,' ').trim();
-    const money=n=>Number(String(n).replace(',','.').replace(/[^0-9.]/g,''));
+    const money=n=>{const v=String(n??'').replace(',','.').replace(/[^0-9.]/g,'');return v===''?NaN:Number(v)};
     function selectImage(file){
       imageFile=file||null;$('analyzeBtn').disabled=!imageFile;
       if(imageFile){$('preview').src=URL.createObjectURL(imageFile);$('preview').style.display='block';$('selectedFile').textContent='Imagen seleccionada: '+imageFile.name}
@@ -106,12 +106,14 @@
         const improved=await preprocessImage(imageFile);
         const out=await Tesseract.recognize(improved,'spa+eng',{logger:m=>{if(m.status==='recognizing text'){const p=Math.round((m.progress||0)*100);$('progressBar').style.width=p+'%';$('progressText').textContent='Analizando texto: '+p+'%'}}});
         let text=out.data.text||'';
-        if(text.replace(/\s/g,'').length<30){
-          $('progressText').textContent='Segundo intento con la imagen original…';
+        let parsed=parseReceipt(text,exp,recipient);
+        if(text.replace(/\s/g,'').length<30 || parsed.detected==null || parsed.date==='No identificada' || (recipient && parsed.detectedRecipient==='No identificado')){
+          $('progressText').textContent='Segundo intento para completar los datos…';
           const retry=await Tesseract.recognize(imageFile,'spa+eng');
-          if((retry.data.text||'').length>text.length) text=retry.data.text||'';
+          const retryText=retry.data.text||'';
+          if(retryText.trim()) text=text+'\n'+retryText;
+          parsed=parseReceipt(text,exp,recipient);
         }
-        const parsed=parseReceipt(text,exp);
         current={expected:exp,recipient,text,...parsed}; showAnalysis();
       }catch(err){alert('No se pudo analizar la imagen. Comprueba tu conexión e inténtalo otra vez.');console.error(err)}
       finally{$('progress').style.display='none';$('analyzeBtn').disabled=false}
@@ -124,19 +126,75 @@
       for(let i=0;i<d.length;i+=4){let g=.299*d[i]+.587*d[i+1]+.114*d[i+2];g=Math.max(0,Math.min(255,(g-128)*1.45+128));d[i]=d[i+1]=d[i+2]=g}
       ctx.putImageData(img,0,0);return await new Promise(resolve=>canvas.toBlob(resolve,'image/png',1));
     }
-    function parseReceipt(text,expected){
-      const clean=text.replace(/[|]/g,' ').replace(/\n+/g,' '); 
-      const preferred=[...clean.matchAll(/(?:s\/?\.?|pen|importe|monto|enviaste|pagaste|transferiste)\s*[:.]?\s*(\d{1,5}(?:[.,]\d{1,2})?)/gi)].map(x=>money(x[1])).filter(Number.isFinite);
-      const general=[...clean.matchAll(/\b(\d{1,5}[.,]\d{2})\b/g)].map(x=>money(x[1])).filter(Number.isFinite);
-      const amountMatches=[...preferred,...general];
-      let detected=amountMatches.find(x=>Math.abs(x-expected)<.011) ?? amountMatches[0] ?? null;
-      const date=(clean.match(/\b([0-3]?\d[\/-][01]?\d[\/-](?:20)?\d{2})\b/)||[])[1]||'No identificada';
-      const time=(clean.match(/\b([0-2]?\d:[0-5]\d(?:\s?[ap]\.?m\.?)?)\b/i)||[])[1]||'No identificada';
-      const code=(clean.match(/(?:operaci[oó]n|c[oó]digo|nro\.?|n[uú]mero|id|transacci[oó]n)\s*[:#-]?\s*([a-z0-9-]{4,})/i)||[])[1]||'No identificado';
-      const platform=/\byape\b/i.test(clean)?'Yape':/\bplin\b/i.test(clean)?'Plin':/transferencia|banco/i.test(clean)?'Transferencia':'No identificado';
-      const rec=(clean.match(/(?:para|destinatario|enviaste a|pagaste a|a nombre de)\s*[:.-]?\s*([a-záéíóúñ][a-záéíóúñ ]{2,35})/i)||[])[1];
+    function parseReceipt(text,expected,expectedRecipient=''){
+      const lines=text.split(/\r?\n/).map(x=>x.replace(/[|]/g,' ').replace(/\s+/g,' ').trim()).filter(Boolean);
+      const clean=lines.join(' ');
+      const isDateLine=s=>/\b[0-3]?\d[\/-][01]?\d[\/-](?:20)?\d{2}\b|\b[0-3]?\d\s+(?:ene|feb|mar|abr|may|jun|jul|ago|sep|set|oct|nov|dic)/i.test(s);
+      const isTimeLine=s=>/\b[0-2]?\d:[0-5]\d\b/.test(s);
+      const isLabel=s=>/yape|plin|operaci[oó]n|seguridad|celular|destino|transacci[oó]n|monto|importe|pagaste|enviaste/i.test(s);
+      const values=s=>[...s.matchAll(/\d{1,6}(?:[.,]\d{1,2})?/g)].map(x=>money(x[0])).filter(x=>Number.isFinite(x)&&x>0);
+
+      // Detecta el importe incluso cuando OCR confunde S/ con 8/, 5/, $/, SI, S1 o S 50.
+      const strongAmount=/(?:s\s*(?:[\/|l1i]\s*)?\.?\s*|(?:8|5|\$|§)\s*[\/|l1i]\s*)(\d{1,6}(?:[.,]\d{1,2})?)/i;
+      const labelAmount=/(?:pen|importe|monto|enviaste|pagaste|transferiste)\s*[:.-]?\s*(?:s\s*[\/]?\s*)?(\d{1,6}(?:[.,]\d{1,2})?)/i;
+      const receiptStart=lines.findIndex(x=>/yapeaste|plineaste|pago\s+(?:exitoso|realizado)|transferencia\s+(?:exitosa|realizada)/i.test(normalize(x)));
+      const searchLines=receiptStart>=0?lines.slice(receiptStart,Math.min(lines.length,receiptStart+9)):lines;
+      let amountLine=-1, detected=null, amountConfidence='none';
+
+      for(let i=0;i<searchLines.length;i++){
+        const line=searchLines[i];
+        const m=line.match(labelAmount)||line.match(strongAmount);
+        if(m && !isDateLine(line) && !isTimeLine(line)){
+          const n=money(m[1]);
+          if(Number.isFinite(n)&&n>0){detected=n;amountLine=(receiptStart>=0?receiptStart:0)+i;amountConfidence='explicit';break}
+        }
+      }
+      // Algunos lectores eliminan completamente el símbolo S/. En Yape/Plin el monto está
+      // inmediatamente después del encabezado, así que se revisan solo esas líneas cercanas.
+      if(detected==null && receiptStart>=0){
+        for(let i=receiptStart+1;i<Math.min(lines.length,receiptStart+5);i++){
+          if(isDateLine(lines[i])||isTimeLine(lines[i])||isLabel(lines[i])) continue;
+          const nums=values(lines[i]).filter(x=>x<100000);
+          if(nums.length){detected=nums[0];amountLine=i;amountConfidence='structural';break}
+        }
+      }
+      // Respaldo para comprobantes con otra distribución: prioriza un número monetario decimal.
+      if(detected==null){
+        for(let i=0;i<lines.length;i++){
+          if(isDateLine(lines[i])||isTimeLine(lines[i])) continue;
+          const m=lines[i].match(/\b(\d{1,6}[.,]\d{2})\b/);
+          if(m){detected=money(m[1]);amountLine=i;amountConfidence='decimal';break}
+        }
+      }
+      // Último respaldo: usa el monto esperado solamente si el mismo número aparece en el comprobante.
+      if(detected==null && Number.isFinite(expected)){
+        const found=lines.findIndex((line,i)=>i<20&&!isDateLine(line)&&values(line).some(x=>Math.abs(x-expected)<.011));
+        if(found>=0){detected=expected;amountLine=found;amountConfidence='matched'}
+      }
+
+      const numericDate=(clean.match(/\b([0-3]?\d[\/-][01]?\d[\/-](?:20)?\d{2})\b/)||[])[1];
+      const writtenDate=(clean.match(/\b([0-3]?\d\s+(?:ene|feb|mar|abr|may|jun|jul|ago|sep|set|oct|nov|dic)[a-z]*\.?\s+(?:20)?\d{2})\b/i)||[])[1];
+      const date=numericDate||writtenDate||'No identificada';
+      const time=(clean.match(/\b([0-2]?\d:[0-5]\d(?:\s*[ap]\s*\.?\s*m\.?)?)\b/i)||[])[1]||'No identificada';
+      const code=(clean.match(/(?:nro\.?\s+de\s+operaci[oó]n|operaci[oó]n|c[oó]digo(?:\s+de\s+operaci[oó]n)?|n[uú]mero\s+de\s+operaci[oó]n|id\s+de\s+transacci[oó]n)\s*[:#-]?\s*([a-z0-9-]{4,})/i)||[])[1]||'No identificado';
+      const platform=/yape(?:aste)?|\byape\b/i.test(clean)?'Yape':/plin(?:easte)?|\bplin\b/i.test(clean)?'Plin':/transferencia|banco/i.test(clean)?'Transferencia':'No identificado';
+
+      let rec=(clean.match(/(?:para|destinatario|enviaste a|pagaste a|a nombre de)\s*[:.-]?\s*([a-záéíóúñ][a-záéíóúñ* .]{2,40})/i)||[])[1];
+      // En los comprobantes de Yape y Plin, el nombre suele estar entre el monto y la fecha.
+      if(!rec && amountLine>=0){
+        rec=lines.slice(amountLine+1,Math.min(lines.length,amountLine+5)).find(line=>
+          /^[a-záéíóúñ][a-záéíóúñ* .'-]{2,40}$/i.test(line)&&!isDateLine(line)&&!isTimeLine(line)&&!isLabel(line)
+        );
+      }
+      if(!rec){
+        const wanted=normalize(expectedRecipient).split(' ').filter(x=>x.length>=3);
+        rec=lines.find(line=>{
+          const n=normalize(line);
+          return wanted.length&&wanted.some(word=>n.includes(word.slice(0,Math.min(4,word.length))))&&!/monto|esperado|destinatario|resultado/i.test(line);
+        });
+      }
       const detectedRecipient=rec?rec.trim().replace(/\s{2,}.*/,' '):'No identificado';
-      return {detected,date,time,code,platform,detectedRecipient};
+      return {detected,date,time,code,platform,detectedRecipient,amountConfidence};
     }
     function showAnalysis(){
       $('analysisCard').classList.remove('hidden');$('showExpected').textContent='S/ '+current.expected.toFixed(2);$('showDetected').textContent=current.detected==null?'No identificado':'S/ '+current.detected.toFixed(2);$('showRecipient').textContent=current.recipient||'No registrado';$('showDetectedRecipient').textContent=current.detectedRecipient;$('showPlatform').textContent=current.platform;$('showDate').textContent=current.date;$('showTime').textContent=current.time;$('showCode').textContent=current.code;$('rawText').value=current.text||'No se reconoció texto.';$('correctedAmount').value=current.detected==null?'':current.detected.toFixed(2);$('correctedCode').value=current.code==='No identificado'?'':current.code;compare();$('analysisCard').scrollIntoView({behavior:'smooth'});
@@ -144,8 +202,9 @@
     function compare(){
       current.detected=money($('correctedAmount').value);current.code=$('correctedCode').value.trim()||'No identificado';const box=$('statusBox');
       if(!Number.isFinite(current.detected)){box.className='result yellow';box.innerHTML='<strong>AMARILLO · Lectura incompleta</strong>No se pudo identificar el monto. Revisa el comprobante.'}
-      else if(Math.abs(current.detected-current.expected)>.011){box.className='result red';box.innerHTML='<strong>ROJO · El monto no coincide</strong>Esperabas S/ '+current.expected.toFixed(2)+' y la captura muestra S/ '+current.detected.toFixed(2)+'.'}
-      else if(current.code==='No identificado'){box.className='result yellow';box.innerHTML='<strong>AMARILLO · Falta información</strong>El monto coincide, pero no se identificó el código de operación.'}
+      else if(Math.abs(current.detected-current.expected)>.011 && current.amountConfidence==='explicit'){box.className='result red';box.innerHTML='<strong>ROJO · El monto no coincide</strong>Esperabas S/ '+current.expected.toFixed(2)+' y el comprobante muestra claramente S/ '+current.detected.toFixed(2)+'.'}
+      else if(Math.abs(current.detected-current.expected)>.011){box.className='result yellow';box.innerHTML='<strong>AMARILLO · Lectura dudosa</strong>El lector encontró S/ '+current.detected.toFixed(2)+', pero no pudo confirmar que sea el monto. Revísalo o corrígelo manualmente.'}
+      else if(current.code==='No identificado'||current.date==='No identificada'||(current.recipient&&current.detectedRecipient==='No identificado')){box.className='result yellow';box.innerHTML='<strong>AMARILLO · Lectura incompleta</strong>El monto coincide, pero falta reconocer uno o más datos. Revisa el destinatario, la fecha y el código.'}
       else{box.className='result yellow';box.innerHTML='<strong>AMARILLO · Datos visibles coincidentes</strong>Ahora revisa el movimiento en tu propia cuenta. La captura todavía no confirma el ingreso.'}
       $('showDetected').textContent=Number.isFinite(current.detected)?'S/ '+current.detected.toFixed(2):'No identificado';$('showCode').textContent=current.code;
     }
