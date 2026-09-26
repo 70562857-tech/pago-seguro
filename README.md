@@ -18,6 +18,8 @@ Prototipo académico para analizar datos visibles de un comprobante de pago y gu
 3. Elegir **Tomar foto** o **Cargar desde galería** y seleccionar un comprobante ficticio.
 4. Analizar y revisar los datos encontrados.
 5. Confirmar manualmente si el movimiento aparece en la cuenta.
+6. Revisar el historial al final de la página.
+7. Presionar **Exportar registros a Excel** para descargar el archivo CSV compatible con Excel.
 
 ## Aviso
 
@@ -30,3 +32,6 @@ El análisis visual no confirma por sí solo el ingreso del dinero. El prototipo
 - Segundo intento cuando la primera lectura es insuficiente.
 - Detección de Yape, Plin, monto, fecha, hora, destinatario y código.
 - Visualización del texto completo reconocido y corrección manual.
+- Historial detallado de operaciones en el dispositivo.
+- Resumen de comprobantes analizados, confirmados y no recibidos.
+- Exportación de los registros a Excel mediante un archivo CSV.
