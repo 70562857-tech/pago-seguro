@@ -21,10 +21,9 @@
     .progress{display:none;margin-top:14px}.bar{height:9px;background:#e2e8e9;border-radius:8px;overflow:hidden}.bar span{display:block;height:100%;width:0;background:var(--primary);transition:width .2s}.small{font-size:13px;color:var(--muted)}
     .result{display:none;border-left:6px solid;padding:14px;border-radius:10px;margin-top:14px}.result.red{display:block;background:var(--redbg);border-color:var(--red);color:#7f1d1d}.result.yellow{display:block;background:var(--yellowbg);border-color:#eab308;color:#713f12}.result.green{display:block;background:var(--greenbg);border-color:var(--green);color:#14532d}
     .result strong{display:block;font-size:18px;margin-bottom:4px}.data{display:grid;grid-template-columns:150px 1fr;gap:7px;border-top:1px solid var(--line);padding-top:12px;margin-top:12px}.data b{color:#33474d}.hidden{display:none!important}
-    .summary{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin:12px 0}.summary div{background:#f3f7f7;border:1px solid var(--line);border-radius:10px;padding:10px;text-align:center}.summary strong{display:block;font-size:22px;color:var(--dark)}
     table{width:100%;border-collapse:collapse;font-size:14px}th,td{text-align:left;padding:9px;border-bottom:1px solid var(--line)}th{background:#f3f7f7}.pill{display:inline-block;padding:4px 8px;border-radius:20px;font-size:12px;font-weight:700}.pill.green{background:var(--greenbg);color:var(--green)}.pill.red{background:var(--redbg);color:var(--red)}.pill.yellow{background:var(--yellowbg);color:var(--yellow)}
     .notice{background:#eef6ff;border-left:5px solid #2563eb;padding:12px;border-radius:8px;color:#1e3a8a;font-size:14px}.footer{text-align:center;color:var(--muted);font-size:12px;margin-top:24px}
-    @media(max-width:600px){.grid{grid-template-columns:1fr}.data{grid-template-columns:1fr}.data b{margin-top:5px}h1{font-size:24px}.card{padding:15px}.summary{grid-template-columns:1fr}}
+    @media(max-width:600px){.grid{grid-template-columns:1fr}.data{grid-template-columns:1fr}.data b{margin-top:5px}h1{font-size:24px}.card{padding:15px}}
   </style>
 </head>
 <body>
@@ -82,12 +81,7 @@
     <section class="card">
       <h2>Historial del dispositivo</h2>
       <p class="small">Los registros se guardan solamente en este navegador.</p>
-      <div class="summary">
-        <div><strong id="totalRecords">0</strong><span>Analizados</span></div>
-        <div><strong id="confirmedRecords">0</strong><span>Confirmados</span></div>
-        <div><strong id="rejectedRecords">0</strong><span>No recibidos</span></div>
-      </div>
-      <div style="overflow:auto"><table><thead><tr><th>Fecha y hora</th><th>Medio</th><th>Esperado</th><th>Detectado</th><th>Destinatario</th><th>Código</th><th>Resultado</th></tr></thead><tbody id="historyBody"><tr><td colspan="7">Aún no hay operaciones.</td></tr></tbody></table></div>
+      <div style="overflow:auto"><table><thead><tr><th>Fecha</th><th>Monto</th><th>Resultado</th></tr></thead><tbody id="historyBody"><tr><td colspan="3">Aún no hay operaciones.</td></tr></tbody></table></div>
       <div class="actions"><button id="exportHistoryBtn" class="primary">Exportar registros a Excel</button><button id="clearHistoryBtn" class="neutral">Borrar historial</button></div>
     </section>
     <p class="footer">Prototipo académico. No está afiliado a Yape, Plin ni a una entidad financiera.</p>
@@ -367,13 +361,11 @@
     const safe=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
     function renderHistory(){
       const h=JSON.parse(localStorage.getItem('pagoSeguroHistory')||'[]');
-      $('totalRecords').textContent=h.length;$('confirmedRecords').textContent=h.filter(x=>x.status==='Confirmado').length;$('rejectedRecords').textContent=h.filter(x=>x.status==='No recibido').length;
       $('exportHistoryBtn').disabled=!h.length;
       $('historyBody').innerHTML=h.length?h.map(x=>{
         const expected=Number.isFinite(Number(x.expected))?Number(x.expected):Number(x.amount||0);
-        const detected=x.detected==null?'No identificado':'S/ '+Number(x.detected).toFixed(2);
-        return `<tr><td>${safe(x.date)}</td><td>${safe(x.platform||'No registrado')}</td><td>S/ ${expected.toFixed(2)}</td><td>${safe(detected)}</td><td>${safe(x.recipient||'No registrado')}</td><td>${safe(x.code||'No registrado')}</td><td><span class="pill ${x.color==='green'?'green':'red'}">${safe(x.status)}</span></td></tr>`;
-      }).join(''):'<tr><td colspan="7">Aún no hay operaciones.</td></tr>';
+        return `<tr><td>${safe(x.date)}</td><td>S/ ${expected.toFixed(2)}</td><td><span class="pill ${x.color==='green'?'green':'red'}">${safe(x.status)}</span></td></tr>`;
+      }).join(''):'<tr><td colspan="3">Aún no hay operaciones.</td></tr>';
     }
     function excelCell(value){
       let s=String(value??'');if(/^[=+\-@]/.test(s))s="'"+s;return '"'+s.replace(/"/g,'""')+'"';

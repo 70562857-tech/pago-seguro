@@ -33,5 +33,4 @@ El análisis visual no confirma por sí solo el ingreso del dinero. El prototipo
 - Detección de Yape, Plin, monto, fecha, hora, destinatario y código.
 - Visualización del texto completo reconocido y corrección manual.
 - Historial detallado de operaciones en el dispositivo.
-- Resumen de comprobantes analizados, confirmados y no recibidos.
 - Exportación de los registros a Excel mediante un archivo CSV.
